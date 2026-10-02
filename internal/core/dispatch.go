@@ -59,7 +59,7 @@ var bestEffortEngines = map[string]bool{
 // through. Brook and AmneziaWG are passed as runners because their reconcilers
 // live here, in internal/core, which the adapter package must not import.
 func (c *Controller) buildRegistry() (*adapter.Registry, error) {
-	return adapter.DefaultRegistry(adapter.Options{
+	reg, err := adapter.DefaultRegistry(adapter.Options{
 		DataDir:     c.dataDir,
 		XrayAPIPort: c.xrayAPIPort,
 		Bins:        c.bins,
@@ -95,7 +95,45 @@ func (c *Controller) buildRegistry() (*adapter.Registry, error) {
 		EngineEnv: map[string][]string{
 			model.EngineXray: {"XRAY_LOCATION_ASSET=" + c.bins.GeoAssetDir(binmgr.EngineXray)},
 		},
-	}, c.brook, c.awg)
+	}, c.brook, c.awg, c.kernelwg)
+	if err != nil {
+		return nil, err
+	}
+	// Wire the per-inbound engine override.
+	//
+	// The registry has supported this since it was written and nothing ever set
+	// the hook, so Node.Engine could be stored and was never consulted: every
+	// inbound went to its protocol's default core regardless. Resolve still
+	// refuses an engine that does not serve the protocol, so a bad value is a
+	// clear routing error rather than a core that rejects its whole config.
+	reg.EngineChoice = func(n *model.Node) string {
+		if n == nil {
+			return ""
+		}
+		if e := strings.TrimSpace(n.Engine); e != "" {
+			return e
+		}
+		// WireGuard defaults to the KERNEL where the host can run it.
+		//
+		// sing-box's wireguard endpoint is an outbound construct. As a server it
+		// completes a handshake and answers traffic addressed to its own tunnel
+		// address — so it looks alive, and a client can even ping the gateway —
+		// but it forwards nothing onward. Measured against sing-box 1.13.21 with
+		// fresh keys: handshake succeeds, every request through the tunnel times
+		// out, under every routing configuration tried. A WireGuard inbound
+		// served that way is a tunnel to nowhere.
+		//
+		// So the default follows what actually works. A host without the module
+		// or the tools still gets the sing-box endpoint rather than nothing, and
+		// the Engines page reports which one is serving.
+		if n.Protocol == model.ProtoWireGuard {
+			if ok, _ := KernelWGReady(); ok {
+				return model.EngineKernelWG
+			}
+		}
+		return ""
+	}
+	return reg, nil
 }
 
 // dispatch applies each adapter's share of a reload.

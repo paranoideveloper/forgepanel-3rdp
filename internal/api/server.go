@@ -884,6 +884,9 @@ func (s *Server) routes() {
 			admin.GET("/health/detail", s.handleHealthDetail)
 			admin.GET("/stats", s.handleStats)
 			admin.GET("/overview", s.handleOverview)
+			// The Overview's real data: the machine, the accounts, the inbounds and
+			// what is wrong right now. /overview stays for anything already polling it.
+			admin.GET("/dashboard", s.handleDashboard)
 			admin.GET("/engines", s.handleEngines)
 			// Operator-selectable core versions (FP-ADAPT-014). A cores.go with
 			// no admin. line here is the whole defect class this row exists in.
@@ -1010,6 +1013,9 @@ func (s *Server) routes() {
 	// Subscription endpoint (spec §9): format auto-detect by UA + explicit
 	// suffix. DB-backed when a store is attached, else the in-memory demo store.
 	r.GET("/sub/:token", s.handleSub)
+	// The protocols whose client format is a FILE, not a link. Registered before
+	// the catch-all so it is not swallowed by format sniffing.
+	r.GET("/subconf/:token/:index", s.handleSubNativeConf)
 	r.GET("/sub/:token/*format", s.handleSub)
 
 	// ForgeEdge PULL feed (§6): the Worker's cron fetches this with the token
@@ -1054,7 +1060,15 @@ func (s *Server) routes() {
 	// serving something else.
 	adminPage := s.assetOr("web/index.html", panelAssetMissing)
 	serveAdmin := func(c *gin.Context) { c.Data(200, "text/html; charset=utf-8", adminPage) }
-	r.GET("/", serveAdmin)
+	// The root serves the panel ONLY when there is no secret path to hide it
+	// behind. SECURITY.md's claim for the randomized path is specific — that it
+	// "removes the panel from the results of untargeted scanners probing
+	// /admin, /panel and /xui" — and serving the same shell at / did not
+	// deliver it: / is the commonest probe of all, and a scanner that hit it
+	// got the whole panel. The path was decorative.
+	if s.cfg.AdminPath == "" || s.cfg.AdminPath == "/" {
+		r.GET("/", serveAdmin)
+	}
 	// /studio was a mock page — it built a config client-side and never called
 	// the preview endpoint. The real Config Studio is a tab inside the panel, so
 	// an old bookmark is sent there rather than to a page that no longer exists.
@@ -1084,14 +1098,18 @@ func (s *Server) routes() {
 	// and fall back to the SPA entry for client-side routes. Without this the
 	// panel's HTML loaded but every /_app/*.js and *.css returned 404, so the UI
 	// was completely dead — the single most important thing the panel does.
-	r.NoRoute(s.serveSPA(adminPage))
+	r.NoRoute(s.serveSPA(adminPage, s.cfg.AdminPath))
 }
 
 // serveSPA returns the catch-all handler for the embedded SvelteKit build: a
 // real file under web/ is served with its correct content type; an /api/* miss
 // stays a JSON 404; anything else is a client-side route and gets the SPA entry.
-func (s *Server) serveSPA(entry []byte) gin.HandlerFunc {
+func (s *Server) serveSPA(entry []byte, adminPath string) gin.HandlerFunc {
 	sub, _ := fs.Sub(webFS, "web")
+	// The prefix a client-side route must sit under to be given the shell.
+	// Empty when no secret path is configured, which keeps the old behaviour of
+	// serving the app for any unmatched route.
+	guard := strings.Trim(strings.TrimSpace(adminPath), "/")
 	return func(c *gin.Context) {
 		p := strings.TrimPrefix(path.Clean(c.Request.URL.Path), "/")
 		if strings.HasPrefix(p, "api/") {
@@ -1116,8 +1134,19 @@ func (s *Server) serveSPA(entry []byte) gin.HandlerFunc {
 				return
 			}
 		}
-		// Client-side route (e.g. /admin, /users): serve the SPA entry so the
-		// router can take over.
+		// Client-side route: serve the SPA entry so the router can take over —
+		// but only underneath the secret path. Handing the shell to every
+		// unmatched path is what made the randomized path decorative: /admin,
+		// /panel, /xui and / all answered with the panel, which is precisely
+		// the scanner traffic it exists to be absent from.
+		//
+		// Assets above are deliberately still served by name: breaking them
+		// breaks the panel, and a 200 on a hashed bundle path an attacker would
+		// have to already know is not what a scanner finds.
+		if guard != "" && p != guard && !strings.HasPrefix(p, guard+"/") {
+			fail(c, http.StatusNotFound, "not found")
+			return
+		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", entry)
 	}
 }
@@ -1247,7 +1276,7 @@ func (s *Server) handlePreview(c *gin.Context) {
 	resp.Errors = append(resp.Errors, doctor(&n)...)
 
 	if uri, err := export.URI(&n); err == nil {
-		resp.URI = uri
+		resp.URI = stampDesync(uri, s.paas().Desync)
 	} else if resp.OK {
 		resp.Errors = append(resp.Errors, PreviewFinding{Severity: "warn", Message: "no client link for this protocol: " + err.Error()})
 	}

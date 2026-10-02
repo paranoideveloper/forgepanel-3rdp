@@ -231,11 +231,23 @@ Nothing is required — the platform's own variables are detected. All optional:
 | `FORGEPANEL_ADMIN_USER` | first administrator's username (default `admin`) |
 | `FORGEPANEL_TELEGRAM_TOKEN`, `FORGEPANEL_TELEGRAM_ADMINS` | bot credentials; also settable in the panel |
 | `FORGEPANEL_PAAS` | `1` forces platform mode on somewhere it is not detected; `0` forces it off |
+| `FORGEPANEL_PAAS_TCP_PORTS` | ports the platform routes as raw TCP, comma separated (Fly) |
+| `FORGEPANEL_PAAS_UDP_PORTS` | ports the platform routes as UDP, comma separated (Fly) |
+| `FORGEPANEL_PINGNG_PROFILE` | Railway only: the PingNG Desync profile links carry — `Custom` (default), `Light`, `Balanced`, `Severe`, `Adaptive`, or `off` to emit none |
+| `FORGEPANEL_PINGNG_ARGS` | Railway only: the ByeDPI arguments a `Custom` profile runs (default below) |
 
 `PORT` is supplied by the platform and read on every start.
 
-| `FORGEPANEL_PAAS_TCP_PORTS` | ports the platform routes as raw TCP, comma separated (Fly) |
-| `FORGEPANEL_PAAS_UDP_PORTS` | ports the platform routes as UDP, comma separated (Fly) |
+**PingNG Desync (Railway only).** On Railway every VLESS and Trojan TLS link the panel
+hands out (subscription, share link, QR) also carries PingNG's `png` / `pngargs` fields,
+so a config imported into [PingNG](https://github.com/rezakhosh78/PingNG) starts with
+Desync already on. The default is `Custom` with
+
+    --proto=tls --split 1+s --tlsrec 2+s --timeout 3 --cache-ttl 3600 --delay-range 1-5
+
+which splits the TLS hello one byte into the server name, cuts its TLS record two bytes
+in, and waits 1–5 ms between the pieces. Other clients ignore the two fields. The boot
+log prints the setting in effect.
 
 **Detection.** The same image recognises **Railway** (`RAILWAY_PUBLIC_DOMAIN`), **Render**
 (`RENDER_EXTERNAL_HOSTNAME`), **Fly.io** (`FLY_APP_NAME`) and **Koyeb**

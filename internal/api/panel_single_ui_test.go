@@ -25,19 +25,32 @@ import (
 // opens with an unscoped body{} rule — so the duplicate's colours were applied
 // over the real panel on every page load.
 func TestNoParallelPanelUIs(t *testing.T) {
-	// The root must serve the panel's own shell. adapter-static emits one shell
-	// per prerendered route, and the two differ: index.html pulls the root
-	// page's node bundle, admin.html the duplicate's.
+	// Wherever the panel lives, it must serve the panel's OWN shell.
+	// adapter-static emits one shell per prerendered route and the two differ:
+	// index.html pulls the root page's node bundle, admin.html the duplicate's.
+	//
+	// Checked at the admin path rather than at "/", because the root no longer
+	// serves the panel when a secret path is configured — handing the shell to
+	// every unmatched route made the randomized path decorative, which is the
+	// one thing SECURITY.md claims it does. The assertion here is about WHICH
+	// shell, not about where; it follows the panel.
 	want, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatalf("the panel's own shell is not embedded: %v", err)
 	}
 	s := testServer(t)
+	at := s.cfg.AdminPath + "/"
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, at, nil))
 	if !bytes.Equal(rec.Body.Bytes(), want) {
-		t.Errorf("GET / does not serve the panel's own shell (web/index.html); "+
-			"it served %d bytes and the shell is %d", rec.Body.Len(), len(want))
+		t.Errorf("GET %s does not serve the panel's own shell (web/index.html); "+
+			"it served %d bytes and the shell is %d", at, rec.Body.Len(), len(want))
+	}
+	// And the root must NOT, or the secret path hides nothing.
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if bytes.Equal(rec.Body.Bytes(), want) {
+		t.Error("GET / serves the panel shell even though a secret admin path is set")
 	}
 
 	// The parallel shells must be gone from the bundle. Leaving them embedded

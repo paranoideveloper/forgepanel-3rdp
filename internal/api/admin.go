@@ -228,6 +228,12 @@ func (s *Server) handleCreateInbound(c *gin.Context) {
 		apierr.Fail(c, bad)
 		return
 	}
+	// BEFORE applyCreateDefaults, which would otherwise fill the tunnel address
+	// from a constant and leave nothing for this to choose. Every WireGuard
+	// inbound used to get 10.66.66.0/24 and every AmneziaWG one 10.67.67.0/24,
+	// so a second inbound of either protocol landed on the first one's prefix
+	// and silently carried nothing.
+	s.allocateTunnelSubnet(&n)
 	applyCreateDefaults(&n)   // panel fills in keys/dest/flow/creds so it "just works"
 	s.applyDomain(&n)         // inherit default domain + cascade to SNI/Host/etc.
 	s.applyPaaSAddressing(&n) // behind a platform edge the address is not ours to choose
@@ -444,7 +450,7 @@ func (s *Server) handleInboundConfig(c *gin.Context) {
 		failErr(c, 400, err)
 		return
 	}
-	c.JSON(200, gin.H{"kind": "uri", "uri": uri})
+	c.JSON(200, gin.H{"kind": "uri", "uri": stampDesync(uri, s.paas().Desync)})
 }
 
 // safeName builds a filename-safe label from a remark + port.
@@ -683,14 +689,25 @@ func (s *Server) handleCreateUser(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteUser(c *gin.Context) {
-	id := parseID(c)
+	// Scoped like every other user route, through userOr404.
+	//
+	// This one went straight to DeleteUserCascade on a raw path id. The route
+	// is tenantMgmt, so a RESELLER could delete any user in the panel —
+	// another reseller's customers, or the owner's — and deletion is the one
+	// operation in the set with nothing to undo it. The other six user
+	// handlers all scope; this was the gap.
+	u, _, ok := s.userOr404(c)
+	if !ok {
+		return
+	}
+	id := u.ID
 	// Read the name BEFORE the row goes. The audit trail recorded a bare row id,
 	// which is unresolvable the moment the row is gone — the one entry where
 	// knowing WHO was deleted is the entire point — and a webhook receiver
 	// cannot act on a number either.
-	target := strconv.FormatUint(uint64(id), 10)
-	if u, err := s.db.UserByID(id); err == nil && u.Username != "" {
-		target = u.Username
+	target := u.Username
+	if target == "" {
+		target = strconv.FormatUint(uint64(id), 10)
 	}
 	if err := s.db.DeleteUserCascade(id); err != nil {
 		failErr(c, 500, err)
@@ -860,6 +877,20 @@ func stampIdentity(n *model.Node, u *store.User) {
 	case model.ProtoTrojan, model.ProtoHysteria2, model.ProtoAnyTLS:
 		if u.Password != "" {
 			n.Password = u.Password
+		}
+	case model.ProtoShadowTLS:
+		// The served inbound emits one shadowtls user per assigned panel user,
+		// keyed on that user's password (engine/multi.go). Without the matching
+		// substitution here the subscription handed out the INBOUND's template
+		// password instead, so the two sides never agreed and every connection
+		// died with "shadow-tls v3: hmac mismatch" — the camouflage handshake
+		// completes and authentication then fails, which is why the inbound
+		// looked healthy while serving nobody.
+		if u.Password != "" {
+			if n.ShadowTLS == nil {
+				n.ShadowTLS = &model.ShadowTLSOptions{}
+			}
+			n.ShadowTLS.Password = u.Password
 		}
 	case model.ProtoShadowsocks:
 		// SS-2022 carries a per-user identity header, so each user authenticates

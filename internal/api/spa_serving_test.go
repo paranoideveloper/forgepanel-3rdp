@@ -15,7 +15,7 @@ import (
 func TestSPAAssetsAreServed(t *testing.T) {
 	s := dbServerT(t)
 	entry := s.assetOr("web/index.html", "<!doctype html><html><body>spa</body></html>")
-	s.router.NoRoute(s.serveSPA(entry))
+	s.router.NoRoute(s.serveSPA(entry, ""))
 
 	get := func(p string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
@@ -41,7 +41,7 @@ func TestSPAAssetsAreServed(t *testing.T) {
 func TestSPAAssetsServedUnderSecretPathPrefix(t *testing.T) {
 	s := dbServerT(t)
 	entry := s.assetOr("web/index.html", "<!doctype html><html><body>spa</body></html>")
-	s.router.NoRoute(s.serveSPA(entry))
+	s.router.NoRoute(s.serveSPA(entry, ""))
 
 	// Find a real hashed JS asset in the embedded bundle.
 	sub, _ := fs.Sub(webFS, "web")
